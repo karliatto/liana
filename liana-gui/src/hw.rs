@@ -12,12 +12,12 @@ use async_hwi::{
     bitbox::{api::runtime, BitBox02, PairingBitbox02},
     coldcard,
     jade::{self, Jade},
-    ledger, specter, DeviceKind, Error as HWIError, Version, HWI,
+    ledger, specter, trezor::{self, TrezorClient}, DeviceKind, Error as HWIError, Version, HWI,
 };
 use iced::futures::{SinkExt, Stream};
 use liana::miniscript::bitcoin::{bip32::Fingerprint, hashes::hex::FromHex, Network};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::{debug, warn, error};
 
 #[derive(Debug, Clone)]
 pub enum UnsupportedReason {
@@ -414,6 +414,30 @@ fn refresh(mut state: State) -> impl Stream<Item = HardwareWalletMessage> {
 
             let mut hws: Vec<HardwareWallet> = Vec::new();
             let mut still: Vec<String> = Vec::new();
+
+            for device in TrezorClient::find_devices() {
+                let id = format!("{:?}", device);
+                if state.connected_supported_hws.contains(&id) {
+                    still.push(id);
+                    continue;
+                }
+                let client = match trezor::TrezorClient::connect(device) {
+                    Ok(client) => client,
+                    Err(err) => {
+                        error!("{} connection failed: {}", id, err);
+                        continue;
+                    }
+                };
+                match HardwareWallet::new(id, Arc::new(client), Some(&state.keys_aliases))
+                    .await
+                {
+                    Ok(hw) => hws.push(hw),
+                    Err(e) => {
+                        error!("Failed to create a wallet: {}", e);
+                    }
+                }
+            }
+
             match specter::SpecterSimulator::try_connect().await {
                 Ok(device) => {
                     let id = "specter-simulator".to_string();
