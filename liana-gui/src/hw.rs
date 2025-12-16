@@ -12,12 +12,14 @@ use async_hwi::{
     bitbox::{api::runtime, BitBox02, PairingBitbox02},
     coldcard,
     jade::{self, Jade},
-    ledger, specter, trezor::{self, TrezorClient}, DeviceKind, Error as HWIError, Version, HWI,
+    ledger, specter,
+    trezor::{self, TrezorClient},
+    DeviceKind, Error as HWIError, Version, HWI,
 };
 use iced::futures::{SinkExt, Stream};
 use liana::miniscript::bitcoin::{bip32::Fingerprint, hashes::hex::FromHex, Network};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn, error};
+use tracing::{debug, error, warn};
 
 #[derive(Debug, Clone)]
 pub enum UnsupportedReason {
@@ -428,8 +430,13 @@ fn refresh(mut state: State) -> impl Stream<Item = HardwareWalletMessage> {
                         continue;
                     }
                 };
-                match HardwareWallet::new(id, Arc::new(client), Some(&state.keys_aliases))
-                    .await
+                match handle_trezor_device(
+                    id,
+                    client,
+                    state.wallet.as_ref().map(|w| w.as_ref()),
+                    &state.keys_aliases,
+                )
+                .await
                 {
                     Ok(hw) => hws.push(hw),
                     Err(e) => {
@@ -736,6 +743,50 @@ fn refresh(mut state: State) -> impl Stream<Item = HardwareWalletMessage> {
                 .await;
         }
     })
+}
+
+async fn handle_trezor_device(
+    id: String,
+    mut device: TrezorClient,
+    wallet: Option<&Wallet>,
+    keys_aliases: &HashMap<Fingerprint, String>,
+) -> Result<HardwareWallet, HWIError> {
+    // TODO: handle the case where the device is not supported
+    match (
+        device.get_master_fingerprint().await,
+        device.get_version().await,
+    ) {
+        (Ok(fingerprint), Ok(version)) => {
+            let mut registered = false;
+            if let Some(w) = &wallet {
+                if let Some(cfg) = w
+                    .hardware_wallets
+                    .iter()
+                    .find(|cfg| cfg.fingerprint == fingerprint)
+                {
+                    device = device
+                        .with_wallet(&w.name, &w.main_descriptor.to_string(), Some(cfg.token()))
+                        .expect("Configuration must be correct");
+                    registered = true;
+                }
+            }
+            Ok(HardwareWallet::Supported {
+                id,
+                device: Arc::new(device),
+                kind: DeviceKind::Trezor,
+                fingerprint,
+                version: Some(version),
+                registered: Some(registered),
+                alias: keys_aliases.get(&fingerprint).cloned(),
+            })
+        }
+        (_, _) => Ok(HardwareWallet::Unsupported {
+            id,
+            kind: DeviceKind::Trezor,
+            version: None,
+            reason: UnsupportedReason::AppIsNotOpen,
+        }),
+    }
 }
 
 async fn handle_ledger_device<'a, T: async_hwi::ledger::Transport + Sync + Send + 'static>(
