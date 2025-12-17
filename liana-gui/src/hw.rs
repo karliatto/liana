@@ -13,7 +13,7 @@ use async_hwi::{
     coldcard,
     jade::{self, Jade},
     ledger, specter,
-    trezor::{self, TrezorClient},
+    trezor::{self, TrezorClient, WalletPolicy},
     DeviceKind, Error as HWIError, Version, HWI,
 };
 use iced::futures::{SinkExt, Stream};
@@ -764,9 +764,9 @@ async fn handle_trezor_device(
                     .iter()
                     .find(|cfg| cfg.fingerprint == fingerprint)
                 {
-                    device = device
-                        .with_wallet(&w.name, &w.main_descriptor.to_string(), Some(cfg.token()))
-                        .expect("Configuration must be correct");
+                    let policy = w.main_descriptor.to_string();
+                    let wallet = WalletPolicy::new(&w.name, &policy, cfg.token());
+                    device = device.with_wallet(wallet)?;
                     registered = true;
                 }
             }
